@@ -2,10 +2,13 @@
 #
 # Root Level Makefile
 #
+# Version 2.0
+#
 # (c) by CHERTS <sleuthhound@gmail.com>
 #
 #############################################################
 
+BUILD_BASE	= build
 FW_BASE		= firmware
 
 # Base directory for the compiler
@@ -13,11 +16,13 @@ XTENSA_TOOLS_ROOT ?= c:/Espressif/xtensa-lx106-elf/bin
 
 # base directory of the ESP8266 SDK package, absolute
 SDK_BASE	?= c:/Espressif/ESP8266_SDK
-
 SDK_TOOLS	?= c:/Espressif/utils
-ESPTOOL		?= $(SDK_TOOLS)/esptool.exe
-ESPPORT		?= COM3
-ESPBAUD		?= 256000
+
+# esptool path and port
+ESPTOOL ?= $(SDK_TOOLS)/esptool.exe
+ESPPORT ?= COM4
+# Baud rate for programmer
+BAUD ?= 256000
 
 # SPI_SPEED = 40, 26, 20, 80
 SPI_SPEED ?= 40
@@ -109,40 +114,53 @@ else
   endif
 endif
 
+# name for the target project
+TARGET = app
+
+# which modules (subdirectories) of the project to include in compiling
+MODULES	= driver user
+EXTRA_INCDIR = include $(SDK_BASE)/../extra/include
+
+# libraries used in this project, mainly provided by the SDK
+LIBS = c gcc hal phy pp net80211 lwip wpa main crypto
+
+# compiler flags using during compilation of source files
+CFLAGS = -Os -g -O2 -std=gnu90 -Wpointer-arith -Wundef -Werror -Wl,-EL -fno-inline-functions -nostdlib -mlongcalls -mtext-section-literals -mno-serialize-volatile -D__ets__ -DICACHE_FLASH
+
+# linker flags used to generate the main object file
+LDFLAGS = -nostdlib -Wl,--no-check-sections -u call_user_start -Wl,-static
+
+# linker script used for the above linkier step
+LD_SCRIPT = eagle.app.v6.ld
+
+# various paths from the SDK used in this project
+SDK_LIBDIR	= lib
+SDK_LDDIR	= ld
+SDK_INCDIR	= include include/json
+
 # select which tools to use as compiler, librarian and linker
-CC := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-gcc
-AR := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-ar
-LD := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-gcc
-NM := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-nm
-CPP := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-cpp
+CC	:= $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-gcc
+AR	:= $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-ar
+LD	:= $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-gcc
 OBJCOPY := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-objcopy
 OBJDUMP := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-objdump
-CCFLAGS += -Os -std=gnu90 -ffunction-sections -fno-jump-tables -fdata-sections
 
-CSRCS ?= $(wildcard *.c)
-ASRCs ?= $(wildcard *.s)
-ASRCS ?= $(wildcard *.S)
-SUBDIRS ?= $(patsubst %/,%,$(dir $(wildcard */Makefile)))
+# no user configurable options below here
+SRC_DIR		:= $(MODULES)
+BUILD_DIR	:= $(addprefix $(BUILD_BASE)/,$(MODULES))
+SDK_LIBDIR	:= $(addprefix $(SDK_BASE)/,$(SDK_LIBDIR))
+SDK_INCDIR	:= $(addprefix -I$(SDK_BASE)/,$(SDK_INCDIR))
+SRC			:= $(foreach sdir,$(SRC_DIR),$(wildcard $(sdir)/*.c))
+OBJ			:= $(patsubst %.c,$(BUILD_BASE)/%.o,$(SRC))
+LIBS		:= $(addprefix -l,$(LIBS))
+APP_AR		:= $(addprefix $(BUILD_BASE)/,$(TARGET)_app.a)
+TARGET_OUT	:= $(addprefix $(BUILD_BASE)/,$(TARGET).out)
 
-ODIR := .output
-OBJODIR := $(ODIR)/$(TARGET)/$(FLAVOR)/obj
+LD_SCRIPT	:= $(addprefix -T$(SDK_BASE)/$(SDK_LDDIR)/,$(LD_SCRIPT))
 
-OBJS := $(CSRCS:%.c=$(OBJODIR)/%.o) \
-        $(ASRCs:%.s=$(OBJODIR)/%.o) \
-        $(ASRCS:%.S=$(OBJODIR)/%.o)
-
-DEPS := $(CSRCS:%.c=$(OBJODIR)/%.d) \
-        $(ASRCs:%.s=$(OBJODIR)/%.d) \
-        $(ASRCS:%.S=$(OBJODIR)/%.d)
-
-LIBODIR := $(ODIR)/$(TARGET)/$(FLAVOR)/lib
-OLIBS := $(GEN_LIBS:%=$(LIBODIR)/%)
-
-IMAGEODIR := $(ODIR)/$(TARGET)/$(FLAVOR)/image
-OIMAGES := $(GEN_IMAGES:%=$(IMAGEODIR)/%)
-
-BINODIR := $(ODIR)/$(TARGET)/$(FLAVOR)/bin
-OBINS := $(GEN_BINS:%=$(BINODIR)/%)
+INCDIR			:= $(addprefix -I,$(SRC_DIR))
+EXTRA_INCDIR	:= $(addprefix -I,$(EXTRA_INCDIR))
+MODULE_INCDIR	:= $(addsuffix /include,$(INCDIR))
 
 V ?= $(VERBOSE)
 ifeq ("$(V)","1")
@@ -153,86 +171,53 @@ Q := @
 vecho := @echo
 endif
 
-CCFLAGS += 			\
-	-g			\
-	-O2			\
-	-Wpointer-arith		\
-	-Wundef			\
-	-Werror			\
-	-Wl,-EL			\
-	-fno-inline-functions	\
-	-nostdlib       \
-	-mlongcalls	\
-	-mtext-section-literals
-#	-Wall			
+vpath %.c $(SRC_DIR)
 
-SDK_INCDIR	= include include/json
-SDK_INCDIR	:= $(addprefix -I$(SDK_BASE)/,$(SDK_INCDIR))
-
-CFLAGS = $(CCFLAGS) $(DEFINES) $(EXTRA_CCFLAGS) $(INCLUDES) $(SDK_INCDIR)
-DFLAGS = $(CCFLAGS) $(DDEFINES) $(EXTRA_CCFLAGS) $(INCLUDES) $(SDK_INCDIR)
-
-define ShortcutRule
-$(1): .subdirs $(2)/$(1)
+define compile-objects
+$1/%.o: %.c
+	$(vecho) "CC $$<"
+	$(Q) $(CC) $(INCDIR) $(MODULE_INCDIR) $(EXTRA_INCDIR) $(SDK_INCDIR) $(CFLAGS)  -c $$< -o $$@
 endef
 
-define MakeLibrary
-DEP_LIBS_$(1) = $$(foreach lib,$$(filter %.a,$$(COMPONENTS_$(1))),$$(dir $$(lib))$$(LIBODIR)/$$(notdir $$(lib)))
-DEP_OBJS_$(1) = $$(foreach obj,$$(filter %.o,$$(COMPONENTS_$(1))),$$(dir $$(obj))$$(OBJODIR)/$$(notdir $$(obj)))
-$$(LIBODIR)/$(1).a: $$(OBJS) $$(DEP_OBJS_$(1)) $$(DEP_LIBS_$(1)) $$(DEPENDS_$(1))
-	@mkdir -p $$(LIBODIR)
-	$$(if $$(filter %.a,$$?),mkdir -p $$(EXTRACT_DIR)_$(1))
-	$$(if $$(filter %.a,$$?),cd $$(EXTRACT_DIR)_$(1); $$(foreach lib,$$(filter %.a,$$?),$$(AR) xo $$(UP_EXTRACT_DIR)/$$(lib);))
-	$$(AR) ru $$@ $$(filter %.o,$$?) $$(if $$(filter %.a,$$?),$$(EXTRACT_DIR)_$(1)/*.o)
-	$$(if $$(filter %.a,$$?),$$(RM) -r $$(EXTRACT_DIR)_$(1))
-endef
+.PHONY: all checkdirs clean flash flashinit flashonefile rebuild
 
-define MakeImage
-DEP_LIBS_$(1) = $$(foreach lib,$$(filter %.a,$$(COMPONENTS_$(1))),$$(dir $$(lib))$$(LIBODIR)/$$(notdir $$(lib)))
-DEP_OBJS_$(1) = $$(foreach obj,$$(filter %.o,$$(COMPONENTS_$(1))),$$(dir $$(obj))$$(OBJODIR)/$$(notdir $$(obj)))
-$$(IMAGEODIR)/$(1).out: $$(OBJS) $$(DEP_OBJS_$(1)) $$(DEP_LIBS_$(1)) $$(DEPENDS_$(1))
-	@mkdir -p $$(IMAGEODIR)
-	$$(CC) $$(LDFLAGS) $$(if $$(LINKFLAGS_$(1)),$$(LINKFLAGS_$(1)),$$(LINKFLAGS_DEFAULT) $$(OBJS) $$(DEP_OBJS_$(1)) $$(DEP_LIBS_$(1))) -o $$@ 
-endef
+all: checkdirs $(TARGET_OUT)
 
-$(BINODIR)/%.bin: $(IMAGEODIR)/%.out
-	@mkdir -p $(BINODIR)
+$(TARGET_OUT): $(APP_AR)
+	$(vecho) "LD $@"
+	$(Q) $(LD) -L$(SDK_LIBDIR) $(LD_SCRIPT) $(LDFLAGS) -Wl,--start-group $(LIBS) $(APP_AR) -Wl,--end-group -o $@
 	$(vecho) "------------------------------------------------------------------------------"
 	$(vecho) "Section info:"
-	$(Q) $(OBJDUMP) -h -j .data -j .rodata -j .bss -j .text -j .irom0.text $<
+	$(Q) $(OBJDUMP) -h -j .data -j .rodata -j .bss -j .text -j .irom0.text $@
 	$(vecho) "------------------------------------------------------------------------------"
-	$(Q) $(ESPTOOL) elf2image $< -o../$(FW_BASE)/ $(flashimageoptions)
+	$(Q) $(ESPTOOL) elf2image $(TARGET_OUT) -o$(FW_BASE)/ $(flashimageoptions)
 	$(vecho) "------------------------------------------------------------------------------"
 	$(vecho) "Generate 0x00000.bin and 0x40000.bin successully in folder $(FW_BASE)."
 	$(vecho) "0x00000.bin-------->0x00000"
 	$(vecho) "0x40000.bin-------->0x40000"
 	$(vecho) "Done"
 
-.PHONY: .subdirs all clean clobber progr flash flashinit rebuild
+$(APP_AR): $(OBJ)
+	$(vecho) "AR $@"
+	$(Q) $(AR) cru $@ $^
 
-all: .subdirs $(OBJS) $(OLIBS) $(OIMAGES) $(OBINS) $(SPECIAL_MKTARGETS)
+checkdirs: $(BUILD_DIR) $(FW_BASE)
 
-rebuild: clean clobber all
+$(BUILD_DIR):
+	$(Q) mkdir -p $@
 
-clean:
-	$(foreach d, $(SUBDIRS), $(MAKE) -C $(d) clean;)
-	$(RM) -r $(ODIR)/$(TARGET)/$(FLAVOR)
-	$(RM) $(FW_BASE)/*.bin
+$(FW_BASE):
+	$(Q) mkdir -p $@
 
-clobber: $(SPECIAL_CLOBBER)
-	$(foreach d, $(SUBDIRS), $(MAKE) -C $(d) clobber;)
-	$(RM) -r $(ODIR)
-	#$(RM) $(FW_BASE)/*.bin
+flashonefile: all
+	$(SDK_TOOLS)/gen_flashbin.exe $(FW_BASE)/0x00000.bin $(FW_BASE)/0x40000.bin 0x40000
+	$(Q) mv eagle.app.flash.bin $(FW_BASE)/
+	$(vecho) "Generate eagle.app.flash.bin successully in folder $(FW_BASE)."
+	$(vecho) "eagle.app.flash.bin-------->0x00000"
+	$(ESPTOOL) -p $(ESPPORT) -b $(BAUD) write_flash $(flashimageoptions) 0x00000 $(FW_BASE)/eagle.app.flash.bin
 
-flash:
-	$(foreach d, $(SUBDIRS), $(MAKE) -C $(d) progr;)
-
-progr: all
-ifndef PDIR
-	$(MAKE) -C ./app flash
-else
-	$(ESPTOOL) -p $(ESPPORT) -b $(ESPBAUD) write_flash $(flashimageoptions) 0x00000 ../$(FW_BASE)/0x00000.bin 0x40000 ../$(FW_BASE)/0x40000.bin
-endif
+flash: all
+	$(ESPTOOL) -p $(ESPPORT) -b $(BAUD) write_flash $(flashimageoptions) 0x00000 $(FW_BASE)/0x00000.bin 0x40000 $(FW_BASE)/0x40000.bin
 
 # ===============================================================
 # From http://bbs.espressif.com/viewtopic.php?f=10&t=305
@@ -264,59 +249,13 @@ flashinit:
 		0x3fc000 $(SDK_BASE)/bin/esp_init_data_default.bin \
 		0x3fe000 $(SDK_BASE)/bin/blank.bin
 
-.subdirs:
-	@set -e; $(foreach d, $(SUBDIRS), $(MAKE) -C $(d);)
+rebuild: clean all
 
-ifneq ($(MAKECMDGOALS),clean)
-ifneq ($(MAKECMDGOALS),clobber)
-ifdef DEPS
-sinclude $(DEPS)
-endif
-endif
-endif
+clean:
+	$(Q) rm -f $(APP_AR)
+	$(Q) rm -f $(TARGET_OUT)
+	$(Q) rm -rf $(BUILD_DIR)
+	$(Q) rm -rf $(BUILD_BASE)
+	$(Q) rm -rf $(FW_BASE)
 
-$(OBJODIR)/%.o: %.c
-	@mkdir -p $(OBJODIR);
-	$(CC) $(if $(findstring $<,$(DSRCS)),$(DFLAGS),$(CFLAGS)) $(COPTS_$(*F)) -o $@ -c $<
-
-$(OBJODIR)/%.d: %.c
-	@mkdir -p $(OBJODIR);
-	@echo DEPEND: $(CC) -M $(CFLAGS) $<
-	@set -e; rm -f $@; \
-	$(CC) -M $(CFLAGS) $< > $@.$$$$; \
-	sed 's,\($*\.o\)[ :]*,$(OBJODIR)/\1 $@ : ,g' < $@.$$$$ > $@; \
-	rm -f $@.$$$$
-
-$(OBJODIR)/%.o: %.s
-	@mkdir -p $(OBJODIR);
-	$(CC) $(CFLAGS) -o $@ -c $<
-
-$(OBJODIR)/%.d: %.s
-	@mkdir -p $(OBJODIR); \
-	set -e; rm -f $@; \
-	$(CC) -M $(CFLAGS) $< > $@.$$$$; \
-	sed 's,\($*\.o\)[ :]*,$(OBJODIR)/\1 $@ : ,g' < $@.$$$$ > $@; \
-	rm -f $@.$$$$
-
-$(OBJODIR)/%.o: %.S
-	@mkdir -p $(OBJODIR);
-	$(CC) $(CFLAGS) -D__ASSEMBLER__ -o $@ -c $<
-
-$(OBJODIR)/%.d: %.S
-	@mkdir -p $(OBJODIR); \
-	set -e; rm -f $@; \
-	$(CC) -M $(CFLAGS) $< > $@.$$$$; \
-	sed 's,\($*\.o\)[ :]*,$(OBJODIR)/\1 $@ : ,g' < $@.$$$$ > $@; \
-	rm -f $@.$$$$
-
-$(foreach lib,$(GEN_LIBS),$(eval $(call ShortcutRule,$(lib),$(LIBODIR))))
-
-$(foreach image,$(GEN_IMAGES),$(eval $(call ShortcutRule,$(image),$(IMAGEODIR))))
-
-$(foreach bin,$(GEN_BINS),$(eval $(call ShortcutRule,$(bin),$(BINODIR))))
-
-$(foreach lib,$(GEN_LIBS),$(eval $(call MakeLibrary,$(basename $(lib)))))
-
-$(foreach image,$(GEN_IMAGES),$(eval $(call MakeImage,$(basename $(image)))))
-
-INCLUDES := $(INCLUDES) -I $(PDIR)include -I $(PDIR)include/$(TARGET)
+$(foreach bdir,$(BUILD_DIR),$(eval $(call compile-objects,$(bdir))))
